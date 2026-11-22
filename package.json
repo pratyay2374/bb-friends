@@ -1,0 +1,15 @@
+{
+  "name": "bb-friends",
+  "private": true,
+  "description": "A bb plugin to see friends' status and poke them, backed by a Cloudflare Durable Object.",
+  "scripts": {
+    "install:all": "npm --prefix worker install && npm --prefix plugin install",
+    "sync:protocol": "cp worker/src/protocol.ts plugin/lib/protocol.ts",
+    "typecheck": "npm --prefix worker run typecheck && npm --prefix plugin run typecheck",
+    "test": "npm --prefix worker test && npm --prefix plugin test",
+    "build": "npm --prefix plugin run build",
+    "dev:worker": "npm --prefix worker run dev",
+    "e2e": "./scripts/e2e.sh",
+    "check": "npm run typecheck && npm test && npm run build"
+  }
+}
