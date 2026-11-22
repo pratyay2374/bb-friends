@@ -1,4 +1,4 @@
-import type { ClientMessage, ServerMessage, Status } from "./protocol";
+import type { Avatar, ClientMessage, ServerMessage, Status } from "./protocol";
 import { CLOSE, PROTOCOL_VERSION } from "./protocol";
 import type { ConnectionState } from "./room-state";
 
@@ -26,6 +26,7 @@ export interface ConnectionOptions {
   cid: string;
   name: string;
   getStatus: () => Status;
+  getAvatar?: () => Avatar;
   createSocket: (url: string) => SocketLike;
   onMessage: (message: ServerMessage) => void;
   onState: (state: ConnectionState) => void;
@@ -92,6 +93,7 @@ export class FriendsConnection {
           cid: this.options.cid,
           name: this.options.name,
           status: this.options.getStatus(),
+          avatar: this.options.getAvatar?.(),
         } satisfies ClientMessage),
       );
       this.timers.ping = setInterval(() => {

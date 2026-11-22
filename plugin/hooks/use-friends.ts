@@ -10,7 +10,7 @@ export function useFriends() {
   const [error, setError] = useState<string | null>(null);
 
   const refetch = useCallback(() => {
-    rpc.call("state").then(
+    return rpc.call("state").then(
       (next) => {
         setView(next);
         setError(null);
@@ -19,7 +19,7 @@ export function useFriends() {
     );
   }, [rpc]);
 
-  useEffect(refetch, [refetch]);
+  useEffect(() => { void refetch(); }, [refetch]);
   useRealtime(CHANNEL_CHANGED, refetch);
   return { rpc, view, error, refetch };
 }

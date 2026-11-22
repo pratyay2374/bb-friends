@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { FriendsConnection, type SocketLike } from "../lib/connection";
-import type { ClientMessage, ServerMessage, Status } from "../lib/protocol";
+import { avatarImage, resolveAvatar } from "../lib/avatar";
+import type { Avatar, ClientMessage, ServerMessage, Status } from "../lib/protocol";
 import { applyServerMessage, emptyView, type RoomView } from "../lib/room-state";
 import { parseServerUrl, roomSocketUrl, roomUrl, roomsUrl } from "../lib/server-url";
 
 const BASE = parseServerUrl(process.env.FRIENDS_URL ?? "http://localhost:8787")!;
 
 /** A simulated bb install: the plugin's own connection + reducer, no bb needed. */
-function simulate(name: string, status: Status) {
+function simulate(name: string, status: Status, avatar: Avatar) {
   let view: RoomView = emptyView();
   const events: ServerMessage[] = [];
   const waiters: { pred: () => boolean; resolve: () => void }[] = [];
@@ -18,6 +19,7 @@ function simulate(name: string, status: Status) {
   let connection: FriendsConnection;
   return {
     name,
+    avatar,
     get view() {
       return view;
     },
@@ -28,6 +30,7 @@ function simulate(name: string, status: Status) {
         cid: crypto.randomUUID().replaceAll("-", ""),
         name,
         getStatus: () => status,
+        getAvatar: () => avatar,
         createSocket: (url) => new WebSocket(url) as unknown as SocketLike,
         onMessage: (m) => {
           events.push(m);
@@ -57,15 +60,15 @@ function simulate(name: string, status: Status) {
 }
 
 describe("two clients through a real `wrangler dev`", () => {
-  it("see each other's presence, status changes, a poke and a reaction", async () => {
+  it("see each other's avatars, presence changes, a poke and a reaction", async () => {
     const created = await fetch(roomsUrl(BASE), { method: "POST" });
     expect(created.status).toBe(201);
     const { code } = (await created.json()) as { code: string };
     expect(code).toMatch(/^[A-HJ-NP-Z2-9]{10}$/);
     expect(((await (await fetch(roomUrl(BASE, code))).json()) as { exists: boolean }).exists).toBe(true);
 
-    const ada = simulate("Ada", { state: "busy", project: "bb-friends", threads: 2, provider: "claude-code" });
-    const bo = simulate("Bo", { state: "idle", project: "api", threads: 0, provider: "codex" });
+    const ada = simulate("Ada", { state: "busy", project: "bb-friends", threads: 2, provider: "claude-code" }, { style: "fun-emoji", seed: "ada_seed" });
+    const bo = simulate("Bo", { state: "idle", project: "api", threads: 0, provider: "codex" }, { style: "bottts", seed: "bo_seed" });
 
     ada.connect(code);
     await ada.until(() => ada.view.connection === "connected", "Ada connected");
@@ -80,6 +83,20 @@ describe("two clients through a real `wrangler dev`", () => {
     expect(ada.view.members.find((m) => m.name === "Bo")!.status.state).toBe("idle");
     console.log("presence  Ada sees:", ada.view.members.map((m) => `${m.name}(${m.status.state})`).join(", "));
     console.log("presence  Bo  sees:", bo.view.members.map((m) => `${m.name}(${m.status.state})`).join(", "));
+
+    const boAsAdaSeesHim = ada.view.members.find((m) => m.name === "Bo")!;
+    expect(adaAsBoSeesHer.avatar).toEqual(ada.avatar);
+    expect(boAsAdaSeesHim.avatar).toEqual(bo.avatar);
+    expect(avatarImage(resolveAvatar(adaAsBoSeesHer.avatar, adaAsBoSeesHer.id))).toBe(avatarImage(ada.avatar));
+    expect(avatarImage(resolveAvatar(boAsAdaSeesHim.avatar, boAsAdaSeesHim.id))).toBe(avatarImage(bo.avatar));
+    const newAvatar: Avatar = { style: "avataaars", seed: "new_seed" };
+    ada.send({ t: "status", status: adaAsBoSeesHer.status, avatar: newAvatar });
+    await bo.until(
+      () => bo.view.members.find((m) => m.name === "Ada")?.avatar?.seed === newAvatar.seed,
+      "Bo sees Ada's avatar delta",
+    );
+    expect(bo.view.members.find((m) => m.name === "Ada")?.avatar).toEqual(newAvatar);
+    console.log("avatars   both clients rendered each other's avatar and Bo saw Ada's avatar-only delta");
 
     // 2. status delta
     ada.send({ t: "status", status: { state: "idle", project: "bb-friends", threads: 0, provider: "claude-code" } });

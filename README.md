@@ -19,8 +19,23 @@ scripts/  e2e.sh: runs two simulated clients against a real `wrangler dev`
 | `threads`  | `2`                    | how many threads are running             |
 | `provider` | `claude-code`          | provider id                              |
 | name       | `Ada`                  | the display name you chose               |
+| `avatar`   | `{ style: "fun-emoji", seed: "a1b2…" }` | style and seed only |
 
-Never thread titles, prompts, file paths, ids or message content. This is enforced by construction, not by filtering: status derivation (`plugin/lib/status.ts`) reads a whitelist of thread fields, and the tracker only ever stores that whitelist. Tests feed it full thread objects with secret titles/paths and assert none appear in the status or in any frame sent over the socket (`plugin/test/status.test.ts`, `plugin/test/server.test.ts`). The worker also drops unknown fields. Switch **Share project name and provider** off in the plugin settings to share only state + thread count.
+Never thread titles, prompts, file paths, ids or message content. This is enforced by construction, not by filtering: status derivation (`plugin/lib/status.ts`) reads a whitelist of thread fields, and the tracker only ever stores that whitelist. Tests feed it full thread objects with secret titles/paths and assert none appear in the status or in any frame sent over the socket (`plugin/test/status.test.ts`, `plugin/test/server.test.ts`). The worker also drops unknown fields. Switch **Share project name and provider** off in the plugin settings to limit thread status to state and thread count.
+
+## Avatars
+
+Open **Avatar settings** on the Friends page to preview your avatar, choose one of four styles, or select **Reroll** to generate a new look. Each install starts with Fun Emoji and a random seed that persists across restarts and display-name changes. Older clients without an avatar appear as Fun Emoji seeded by their room member id.
+
+Friends receive only the avatar style and seed. The plugin bundles DiceBear and generates SVGs on-device, including offline previews. Names and seeds are never sent to DiceBear, and avatar images and image URLs are never sent over the socket. Activity entries retain the actor's style and seed so they can still show an avatar after that friend leaves.
+
+### DiceBear credits
+
+- Fun Emoji is DiceBear's remix of [Fun Emoji Set](https://www.figma.com/community/file/968125295144990435) by Davis Uche, under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The plugin renders the remix and displays it with a circular crop.
+- Bottts is DiceBear's remix of [Bottts](https://bottts.com/) by Pablo Stanley, free for personal and commercial use.
+- Avataaars is DiceBear's remix of [Avataaars](https://avataaars.com/) by Pablo Stanley, free for personal and commercial use.
+- [Thumbs](https://www.dicebear.com/styles/thumbs/) is by DiceBear, under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+- DiceBear core and the four style packages' code are copyright © 2024 Florian Körner, under the [MIT License](plugin/DICEBEAR-LICENSE).
 
 ## Why a Durable Object (and not just a Worker)
 
@@ -30,7 +45,7 @@ A plain Worker is stateless: it can't hold a WebSocket open across requests, and
 - **`IpLimiter` Durable Object** (`worker/src/ip-limiter.ts`): one per client IP, used only by `POST /rooms`. See *Room creation limit* below.
 - **`Room` Durable Object** (`worker/src/room.ts`): one per invite code.
   - **WebSocket Hibernation API** (`ctx.acceptWebSocket`, `serializeAttachment`): each member's state lives in their socket's attachment, so an idle room is evicted from memory and costs nothing; the next message wakes it. Keepalive `ping`/`pong` is answered by the runtime via `setWebSocketAutoResponse` without waking the object.
-  - **Deltas, not snapshots**: a full `welcome` on join, then single `member` / `left` / `feed` frames. An unchanged status sends nothing.
+  - **Deltas, not snapshots**: a full `welcome` on join, then single `member` / `left` / `feed` frames. A presence update produces a delta when the status or avatar changes.
   - **Activity ring buffer** (last 50) in the DO's SQLite storage (`new_sqlite_classes`), replayed to newcomers.
   - **Rate limits**: pokes 6/min, reactions 20/min, "finished" cheers 6/min per sender, kept durably in SQLite and keyed by the sender's private client id, so reconnecting or hibernating doesn't reset them. Status updates are flood-limited per socket.
   - **Validation**: every client frame is parsed by `worker/src/protocol.ts`: ≤1 KB (counted in bytes), strict types, whitelisted emoji, control/bidi characters stripped from names, unknown fields dropped.
@@ -73,7 +88,7 @@ curl -X POST localhost:8787/rooms     # → {"code":"K7M2Q9XWPA"}
 npm run e2e                  # boots wrangler dev, runs two simulated clients, stops it
 ```
 
-The clients are built from the plugin's real connection + state code; the test asserts both see each other's presence, a status delta, a poke delivered to the target only, a reaction, and a leave.
+The clients are built from the plugin's real connection + state code; the test asserts both see each other's avatars and presence, an avatar-only delta, a status delta, a poke delivered to the target only, a reaction, and a leave.
 
 ### Install the plugin into bb
 

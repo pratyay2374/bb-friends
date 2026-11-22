@@ -10,7 +10,7 @@
  *
  * Privacy contract: the only thing about a user's bb that ever crosses this
  * protocol is `Status` (state, project NAME, active-thread COUNT, provider id)
- * plus the display name they chose. No titles, prompts, paths or content.
+ * plus the display name and avatar style and seed they chose. No titles, prompts, paths or content.
  */
 
 export const PROTOCOL_VERSION = 1;
@@ -53,10 +53,21 @@ export const DEFAULT_STATUS: Status = {
   provider: null,
 };
 
+export const AVATAR_STYLES = ["fun-emoji", "bottts", "avataaars", "thumbs"] as const;
+export type AvatarStyle = (typeof AVATAR_STYLES)[number];
+export const DEFAULT_AVATAR_STYLE = AVATAR_STYLES[0];
+export const AVATAR_SEED_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+
+export interface Avatar {
+  style: AvatarStyle;
+  seed: string;
+}
+
 export interface Member {
   id: string;
   name: string;
   status: Status;
+  avatar?: Avatar;
   /** Epoch ms when this member joined the room. */
   since: number;
 }
@@ -76,6 +87,7 @@ export interface FeedEntry {
   kind: FeedKind;
   who: string;
   whoId: string;
+  avatar?: Avatar;
   target?: string;
   targetId?: string;
   emoji?: string;
@@ -89,8 +101,8 @@ export interface PersonRef {
 // ── client → server ────────────────────────────────────────────────────────
 
 export type ClientMessage =
-  | { t: "hello"; v: number; cid: string; name: string; status?: Status }
-  | { t: "status"; status: Status }
+  | { t: "hello"; v: number; cid: string; name: string; status?: Status; avatar?: Avatar }
+  | { t: "status"; status: Status; avatar?: Avatar }
   | { t: "poke"; to: string }
   | { t: "react"; to: string; emoji: Reaction }
   /** "I finished a thread": shows up in the feed, invites a high-five. */
@@ -106,7 +118,7 @@ export type ServerMessage =
       members: Member[];
       feed: FeedEntry[];
     }
-  /** Delta: one member joined or changed status. */
+  /** Delta: one member joined or changed presence. */
   | { t: "member"; member: Member }
   /** Delta: one member went offline. */
   | { t: "left"; id: string }
@@ -184,6 +196,18 @@ const bad = (message: string, code: ErrorCode = "bad_message"): Parsed<never> =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+export function parseAvatar(value: unknown): Avatar | undefined {
+  if (!isRecord(value)) return;
+  const { style, seed } = value;
+  if (
+    typeof style !== "string" ||
+    !(AVATAR_STYLES as readonly string[]).includes(style) ||
+    typeof seed !== "string" ||
+    !AVATAR_SEED_PATTERN.test(seed)
+  ) return;
+  return { style: style as AvatarStyle, seed };
+}
+
 const encoder = new TextEncoder();
 
 function parseStatus(value: unknown): Parsed<Status> {
@@ -236,6 +260,10 @@ export function parseClientMessage(raw: string | ArrayBuffer): Parsed<ClientMess
   }
   if (!isRecord(json) || typeof json.t !== "string") return bad("missing message type");
 
+  const avatar = json.t === "hello" || json.t === "status" ? parseAvatar(json.avatar) : undefined;
+  if ((json.t === "hello" || json.t === "status") && json.avatar !== undefined && !avatar)
+    return bad("invalid avatar style or seed");
+
   switch (json.t) {
     case "hello": {
       if (json.v !== PROTOCOL_VERSION)
@@ -265,13 +293,14 @@ export function parseClientMessage(raw: string | ArrayBuffer): Parsed<ClientMess
           cid,
           name: cleanName,
           ...(status ? { status } : {}),
+          ...(avatar ? { avatar } : {}),
         },
       };
     }
     case "status": {
       const parsed = parseStatus(json.status);
       if (!parsed.ok) return parsed;
-      return { ok: true, value: { t: "status", status: parsed.value } };
+      return { ok: true, value: { t: "status", status: parsed.value, ...(avatar ? { avatar } : {}) } };
     }
     case "poke": {
       if (typeof json.to !== "string" || json.to.length === 0 || json.to.length > 32)

@@ -2,7 +2,7 @@ import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/tes
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SocketLike } from "../lib/connection";
-import type { ClientMessage } from "../lib/protocol";
+import type { Avatar, ClientMessage } from "../lib/protocol";
 import { createPlugin } from "../server";
 
 class FakeSocket implements SocketLike {
@@ -89,6 +89,43 @@ describe("plugin server", () => {
     });
     service.controller.abort();
     await service.done;
+  });
+
+  it("creates a random default avatar and preserves the chosen look across rename and restart", async () => {
+    const { bb, harness, service } = await boot({ room: "ABCDEFGHJK" });
+    const restartWithAvatar = async (saved: Avatar | undefined) => {
+      const restarted = createFakePluginHost({ pluginId: "friends" });
+      await restarted.bb.storage.kv.set("avatar", saved);
+      await createPlugin({ createSocket: (url) => new FakeSocket(url) })(restarted.bb);
+      return restarted.harness.behavior.callRpc("state", null);
+    };
+    const initial = await bb.storage.kv.get<Avatar>("avatar");
+    expect(initial).toEqual({ style: "fun-emoji", seed: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect(await restartWithAvatar(initial)).toMatchObject({ avatar: initial });
+    const socket = FakeSocket.all[0]!;
+    socket.open();
+    expect(socket.frames()[0]).toMatchObject({ t: "hello", avatar: initial });
+    socket.receive(welcome());
+
+    const styled = await harness.behavior.callRpc("setAvatar", { style: "bottts" });
+    expect(styled).toEqual({ ...initial, style: "bottts" });
+    const rerolled = await harness.behavior.callRpc("setAvatar", null);
+    expect(rerolled).toEqual({ style: "bottts", seed: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect(rerolled).not.toEqual(styled);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(socket.frames().at(-1)).toMatchObject({ t: "status", avatar: rerolled });
+
+    await harness.behavior.callRpc("setName", { name: "Ada" });
+    const renamed = FakeSocket.all.at(-1)!;
+    renamed.open();
+    expect(renamed.frames()[0]).toMatchObject({ t: "hello", name: "Ada", avatar: rerolled });
+    expect(await bb.storage.kv.get("avatar")).toEqual(rerolled);
+
+    service.controller.abort();
+    await service.done;
+
+    // A fresh plugin instance reads the same persisted value.
+    expect(await restartWithAvatar(await bb.storage.kv.get<Avatar>("avatar"))).toMatchObject({ avatar: rerolled });
   });
 
   it("never sends titles, paths or ids over the wire, whatever bb tells it", async () => {

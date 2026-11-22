@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -7,8 +7,11 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 import { useFriends } from "../hooks/use-friends";
+import { avatarImage, resolveAvatar } from "../lib/avatar";
 import { describeFeed, describeStatus, sortMembers, timeAgo } from "../lib/describe";
-import { REACTIONS, formatRoomCode, type FeedEntry, type Member } from "../lib/protocol";
+import {
+  AVATAR_STYLES, REACTIONS, formatRoomCode, type Avatar, type AvatarStyle, type FeedEntry, type Member,
+} from "../lib/protocol";
 import type { FriendsView } from "../lib/rpc";
 
 const DOT = {
@@ -18,6 +21,53 @@ const DOT = {
 } as const;
 
 const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+
+const AVATAR_LABELS: Record<AvatarStyle, string> = {
+  "fun-emoji": "Fun Emoji",
+  bottts: "Bottts",
+  avataaars: "Avataaars",
+  thumbs: "Thumbs",
+};
+
+function AvatarImage({ avatar: { style, seed }, size, label }: { avatar: Avatar; size: number; label?: string }) {
+  const src = useMemo(() => avatarImage({ style, seed }), [style, seed]);
+  return <img src={src} alt={label ?? ""} width={size} height={size} className="shrink-0 rounded-full bg-muted" />;
+}
+
+function AvatarSettings({ avatar, save }: { avatar: Avatar; save: (input: { style: AvatarStyle } | null) => Promise<unknown> }) {
+  const [saving, setSaving] = useState(false);
+  const update = async (input: Parameters<typeof save>[0]) => {
+    setSaving(true);
+    try {
+      await save(input);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <details className="rounded-lg border border-border bg-card px-4 py-3">
+      <summary className="cursor-pointer text-sm font-medium">Avatar settings</summary>
+      <div className="mt-3 flex flex-wrap items-end gap-3">
+        <AvatarImage avatar={avatar} size={48} label="Avatar preview" />
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Style
+          <select
+            className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+            value={avatar.style}
+            disabled={saving}
+            onChange={(event) => void update({ style: event.target.value as AvatarStyle })}
+          >
+            {AVATAR_STYLES.map((style) => <option key={style} value={style}>{AVATAR_LABELS[style]}</option>)}
+          </select>
+        </label>
+        <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => void update(null)}>
+          Reroll
+        </Button>
+      </div>
+    </details>
+  );
+}
 
 function Setup({
   view,
@@ -71,11 +121,13 @@ function Setup({
 
 function MemberRow({
   member,
+  avatar,
   isYou,
   onPoke,
   onReact,
 }: {
   member: Member;
+  avatar: Avatar;
   isYou: boolean;
   onPoke: () => void;
   onReact: (emoji: (typeof REACTIONS)[number]) => void;
@@ -87,6 +139,7 @@ function MemberRow({
         className={cn("size-2.5 shrink-0 rounded-full", DOT[member.status.state])}
         aria-label={member.status.state}
       />
+      <AvatarImage avatar={avatar} size={32} />
       <div className="min-w-0 flex-1">
         <div className="truncate font-medium">
           {member.name}
@@ -124,9 +177,15 @@ function MemberRow({
   );
 }
 
-function FeedRow({ entry, youId, onHighFive }: { entry: FeedEntry; youId: string | null; onHighFive: () => void }) {
+function FeedRow({ entry, avatar, youId, onHighFive }: {
+  entry: FeedEntry;
+  avatar: Avatar;
+  youId: string | null;
+  onHighFive: () => void;
+}) {
   return (
     <li className="flex items-center gap-2 px-4 py-2 text-xs">
+      <AvatarImage avatar={avatar} size={24} />
       <span className="min-w-0 flex-1 truncate">{describeFeed(entry)}</span>
       {entry.kind === "done" && entry.whoId !== youId ? (
         <Button variant="ghost" size="sm" onClick={onHighFive}>
@@ -148,10 +207,26 @@ export function FriendsPage() {
   };
   const quiet = (fn: () => Promise<unknown>) => fn().catch((cause: unknown) => toast.error(message(cause)));
 
+  const membersById = new Map(view?.members.map((member) => [member.id, member]));
+
   return (
     <div className="h-full min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto box-border w-full max-w-2xl space-y-5 px-4 pb-6 pt-4 md:px-5">
-        <h1 className="text-lg font-semibold">Friends</h1>
+        <header className="flex flex-wrap items-center justify-between gap-2">
+          <h1 className="text-lg font-semibold">Friends</h1>
+          {view && (
+            <div className="flex min-w-0 items-center gap-2 text-sm">
+              <AvatarImage avatar={view.avatar} size={32} />
+              <span className="truncate">{view.name}</span>
+            </div>
+          )}
+        </header>
+        {view && (
+          <AvatarSettings avatar={view.avatar} save={(input) => quiet(async () => {
+            await rpc.call("setAvatar", input);
+            await refetch();
+          })} />
+        )}
         {view === null ? (
           <p className="text-sm text-muted-foreground">{error ?? "Loading…"}</p>
         ) : view.room === null ? (
@@ -193,6 +268,7 @@ export function FriendsPage() {
                   <MemberRow
                     key={member.id}
                     member={member}
+                    avatar={member.id === view.you ? view.avatar : resolveAvatar(member.avatar, member.id)}
                     isYou={member.id === view.you}
                     onPoke={() => void quiet(() => rpc.call("poke", { to: member.id }))}
                     onReact={(emoji) => void quiet(() => rpc.call("react", { to: member.id, emoji }))}
@@ -211,6 +287,9 @@ export function FriendsPage() {
                     <FeedRow
                       key={entry.id}
                       entry={entry}
+                      avatar={entry.whoId === view.you
+                        ? view.avatar
+                        : resolveAvatar(membersById.get(entry.whoId)?.avatar ?? entry.avatar, entry.whoId)}
                       youId={view.you}
                       onHighFive={() => void quiet(() => rpc.call("react", { to: entry.whoId, emoji: "🙌" }))}
                     />

@@ -7,8 +7,10 @@ import {
   DEFAULT_STATUS,
   LIMITS,
   PROTOCOL_VERSION,
+  parseAvatar,
   parseClientMessage,
   statusEquals,
+  type Avatar,
   type ClientMessage,
   type ErrorCode,
   type FeedEntry,
@@ -38,6 +40,7 @@ interface Attachment {
   id: string;
   name: string;
   status: Status;
+  avatar?: Avatar;
   since: number;
 }
 
@@ -95,10 +98,15 @@ export class Room extends DurableObject<Env> {
         who TEXT NOT NULL,
         target_id TEXT,
         target TEXT,
-        emoji TEXT
+        emoji TEXT,
+        avatar TEXT
       );
     `);
-    this.ctx.storage.sql.exec(RATE_SCHEMA);
+    const sql = this.ctx.storage.sql;
+    if (!sql.exec<{ name: string }>("PRAGMA table_info(feed)").toArray().some(({ name }) => name === "avatar")) {
+      sql.exec("ALTER TABLE feed ADD COLUMN avatar TEXT");
+    }
+    sql.exec(RATE_SCHEMA);
   }
 
   // ── RPC from the Worker ──────────────────────────────────────────────────
@@ -167,7 +175,7 @@ export class Room extends DurableObject<Env> {
 
     switch (msg.t) {
       case "status":
-        return this.onStatus(ws, state, msg.status);
+        return this.onStatus(ws, state, msg.status, msg.avatar);
       case "poke":
         return this.onTargeted(ws, state, "poke", msg.to);
       case "react":
@@ -226,6 +234,7 @@ export class Room extends DurableObject<Env> {
       id: previous?.state.id ?? randomId(),
       name: msg.name,
       status: msg.status ?? DEFAULT_STATUS,
+      ...(msg.avatar ? { avatar: msg.avatar } : {}),
       since: previous?.state.since ?? now,
     };
     ws.serializeAttachment(attachment);
@@ -247,7 +256,7 @@ export class Room extends DurableObject<Env> {
     if (!previous) this.record("joined", attachment);
   }
 
-  private onStatus(ws: WebSocket, state: Attachment, status: Status): void {
+  private onStatus(ws: WebSocket, state: Attachment, status: Status, avatar?: Avatar): void {
     const now = Date.now();
     const times = (this.statusTimes.get(ws) ?? []).filter(
       (t) => now - t < STATUS_WINDOW_MS,
@@ -259,8 +268,9 @@ export class Room extends DurableObject<Env> {
     times.push(now);
     this.statusTimes.set(ws, times);
 
-    if (statusEquals(state.status, status)) return; // nothing changed: no delta
-    const next: Attachment = { ...state, status };
+    const avatarChanged = avatar && (avatar.style !== state.avatar?.style || avatar.seed !== state.avatar?.seed);
+    if (statusEquals(state.status, status) && !avatarChanged) return;
+    const next: Attachment = { ...state, status, ...(avatar ? { avatar } : {}) };
     ws.serializeAttachment(next);
     this.broadcast({ t: "member", member: toMember(next) }, ws);
     if (state.status.state !== status.state) {
@@ -365,8 +375,8 @@ export class Room extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     const row = sql
       .exec<{ id: number }>(
-        `INSERT INTO feed (at, kind, who_id, who, target_id, target, emoji)
-         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        `INSERT INTO feed (at, kind, who_id, who, target_id, target, emoji, avatar)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
         at,
         kind,
         who.id,
@@ -374,6 +384,7 @@ export class Room extends DurableObject<Env> {
         target?.id ?? null,
         target?.name ?? null,
         emoji ?? null,
+        who.avatar ? JSON.stringify(who.avatar) : null,
       )
       .one();
     sql.exec("DELETE FROM feed WHERE id <= ?", row.id - LIMITS.feedSize);
@@ -383,6 +394,7 @@ export class Room extends DurableObject<Env> {
       kind,
       who: who.name,
       whoId: who.id,
+      ...(who.avatar ? { avatar: who.avatar } : {}),
       ...(target ? { target: target.name, targetId: target.id } : {}),
       ...(emoji ? { emoji } : {}),
     };
@@ -400,20 +412,25 @@ export class Room extends DurableObject<Env> {
         target_id: string | null;
         target: string | null;
         emoji: string | null;
+        avatar: string | null;
       }>("SELECT * FROM feed ORDER BY id DESC LIMIT ?", LIMITS.feedSize)
       .toArray()
       .reverse()
-      .map((row) => ({
-        id: row.id,
-        at: row.at,
-        kind: row.kind,
-        who: row.who,
-        whoId: row.who_id,
-        ...(row.target !== null && row.target_id !== null
-          ? { target: row.target, targetId: row.target_id }
-          : {}),
-        ...(row.emoji !== null ? { emoji: row.emoji } : {}),
-      }));
+      .map((row) => {
+        const avatar = row.avatar === null ? undefined : parseAvatar(JSON.parse(row.avatar));
+        return {
+          id: row.id,
+          at: row.at,
+          kind: row.kind,
+          who: row.who,
+          whoId: row.who_id,
+          ...(avatar ? { avatar } : {}),
+          ...(row.target !== null && row.target_id !== null
+            ? { target: row.target, targetId: row.target_id }
+            : {}),
+          ...(row.emoji !== null ? { emoji: row.emoji } : {}),
+        };
+      });
   }
 
   /**
@@ -431,4 +448,5 @@ const toMember = (state: Attachment): Member => ({
   name: state.name,
   status: state.status,
   since: state.since,
+  ...(state.avatar ? { avatar: state.avatar } : {}),
 });

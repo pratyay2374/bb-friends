@@ -1,7 +1,7 @@
 import { SELF, env, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { CLOSE, LIMITS } from "../src/protocol";
+import { CLOSE, LIMITS, PROTOCOL_VERSION } from "../src/protocol";
 import { Client, createRoom, status } from "./helpers";
 
 const stubFor = (code: string) => env.ROOMS.get(env.ROOMS.idFromName(code));
@@ -43,6 +43,47 @@ describe("presence", () => {
     const joined = await a.client.next((m) => m.t === "member" && m.member.name === "Bo");
     expect(joined).toMatchObject({ t: "member" });
     await a.client.next((m) => m.t === "feed" && m.entry.kind === "joined" && m.entry.who === "Bo");
+  });
+
+  it.each([
+    { style: "unknown", seed: "valid_seed" },
+    { style: "fun-emoji", seed: "x".repeat(33) },
+    { style: "thumbs", seed: "unsafe<script>" },
+  ])("rejects invalid avatars in hello and status", async (avatar) => {
+    const code = await createRoom();
+    const client = await Client.open(code);
+    const hello = { t: "hello", v: PROTOCOL_VERSION, cid: client.cid, name: "Ada" } as const;
+    client.send(JSON.stringify({ ...hello, avatar }));
+    expect(await client.next("error")).toMatchObject({ code: "bad_message" });
+    client.send(hello);
+    expect((await client.next("welcome")).members[0]?.avatar).toBeUndefined();
+
+    client.send(JSON.stringify({ t: "status", status: status(), avatar }));
+    expect(await client.next("error")).toMatchObject({ code: "bad_message" });
+    const observer = await Client.join(code, "Bo");
+    expect(observer.welcome.members.find((m) => m.name === "Ada")?.avatar).toBeUndefined();
+  });
+
+  it("replays historical avatars from storage alongside pre-avatar feed rows", async () => {
+    const code = await createRoom();
+    await runInDurableObject(stubFor(code), (_room, state) => {
+      state.storage.sql.exec("ALTER TABLE feed DROP COLUMN avatar");
+      state.storage.sql.exec("INSERT INTO feed (at, kind, who_id, who) VALUES (1, 'left', 'old-id', 'Old friend')");
+    });
+    await evictDurableObject(stubFor(code));
+
+    const ada = await Client.join(code, "Ada");
+    expect(ada.welcome.feed[0]).toMatchObject({ whoId: "old-id", who: "Old friend" });
+    expect(ada.welcome.feed[0]?.avatar).toBeUndefined();
+    const avatar = { style: "thumbs", seed: "short_seed" } as const;
+    ada.client.send({ t: "status", status: status(), avatar });
+    ada.client.send({ t: "done" });
+    expect((await ada.client.next((frame) => frame.t === "feed" && frame.entry.kind === "done"))).toMatchObject({
+      entry: { avatar },
+    });
+
+    const bo = await Client.join(code, "Bo");
+    expect(bo.welcome.feed.find((entry) => entry.kind === "done")?.avatar).toEqual(avatar);
   });
 
   it("broadcasts status as a delta only when something changed", async () => {

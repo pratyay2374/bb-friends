@@ -1,7 +1,7 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-import { LIMITS, REACTIONS, STATES } from "./protocol";
+import { AVATAR_SEED_PATTERN, AVATAR_STYLES, LIMITS, REACTIONS, STATES } from "./protocol";
 
 const statusSchema = z.object({
   state: z.enum(STATES),
@@ -10,10 +10,14 @@ const statusSchema = z.object({
   provider: z.string().nullable(),
 });
 
+const avatarStyleSchema = z.enum(AVATAR_STYLES);
+const avatarSchema = z.object({ style: avatarStyleSchema, seed: z.string().regex(AVATAR_SEED_PATTERN) });
+
 const memberSchema = z.object({
   id: z.string(),
   name: z.string(),
   status: statusSchema,
+  avatar: avatarSchema.optional(),
   since: z.number(),
 });
 
@@ -23,6 +27,7 @@ const feedEntrySchema = z.object({
   kind: z.enum(["joined", "left", "busy", "idle", "poke", "react", "done"]),
   who: z.string(),
   whoId: z.string(),
+  avatar: avatarSchema.optional(),
   target: z.string().optional(),
   targetId: z.string().optional(),
   emoji: z.string().optional(),
@@ -34,6 +39,7 @@ export const viewSchema = z.object({
   you: z.string().nullable(),
   name: z.string(),
   serverUrl: z.string(),
+  avatar: avatarSchema,
   members: z.array(memberSchema),
   feed: z.array(feedEntrySchema),
   error: z.string().nullable(),
@@ -53,6 +59,10 @@ export const rpcContract = defineRpcContract({
   setName: {
     input: z.object({ name: z.string().max(LIMITS.nameMax * 4) }).strict(),
     output: z.object({ name: z.string() }),
+  },
+  setAvatar: {
+    input: z.union([z.object({ style: avatarStyleSchema }).strict(), z.null()]),
+    output: avatarSchema,
   },
   poke: { input: z.object({ to: memberId }).strict(), output: z.object({ sent: z.boolean() }) },
   react: {

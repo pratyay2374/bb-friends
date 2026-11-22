@@ -6,7 +6,9 @@ import {
 import { z } from "zod";
 
 import { FriendsConnection, type SocketLike } from "./lib/connection";
-import { LIMITS, cleanText, type ServerMessage } from "./lib/protocol";
+import {
+  DEFAULT_AVATAR_STYLE, LIMITS, cleanText, parseAvatar, type Avatar, type ServerMessage,
+} from "./lib/protocol";
 import { applyServerMessage, emptyView, type RoomView } from "./lib/room-state";
 import {
   CHANNEL_CHANGED,
@@ -33,6 +35,8 @@ export { rpcContract };
 
 const KV_ROOM = "room";
 const KV_CID = "client-id";
+const KV_AVATAR = "avatar";
+const randomAvatarSeed = () => randomBytes(16).toString("hex");
 /** A thread must have run this long before finishing it earns a cheer. */
 const CELEBRATE_AFTER_MS = 2 * 60 * 1000;
 /** Thread events are bursty; send one status after they settle. */
@@ -90,6 +94,10 @@ export function createPlugin(deps: PluginDeps) {
       await kv.set(KV_CID, cid);
     }
     const clientId = cid;
+    const savedAvatar = parseAvatar(await kv.get(KV_AVATAR));
+    let avatar: Avatar = savedAvatar ?? { style: DEFAULT_AVATAR_STYLE, seed: randomAvatarSeed() };
+    if (!savedAvatar) await kv.set(KV_AVATAR, avatar);
+    let avatarWrite = Promise.resolve();
 
     const tracker = new ThreadTracker();
     const projectNames = new Map<string, string>();
@@ -108,6 +116,7 @@ export function createPlugin(deps: PluginDeps) {
       ...view,
       room,
       name: effectiveName(),
+      avatar,
       serverUrl: current.serverUrl,
     });
 
@@ -143,6 +152,7 @@ export function createPlugin(deps: PluginDeps) {
           cid: clientId,
           name: effectiveName(),
           getStatus: currentStatus,
+          getAvatar: () => avatar,
           createSocket: deps.createSocket,
           onMessage: handleMessage,
           onState: (connectionState) => {
@@ -166,7 +176,7 @@ export function createPlugin(deps: PluginDeps) {
     const pushStatus = () => {
       clearTimeout(statusTimer);
       statusTimer = setTimeout(() => {
-        connection?.send({ t: "status", status: currentStatus() });
+        connection?.send({ t: "status", status: currentStatus(), avatar });
       }, STATUS_DEBOUNCE_MS);
     };
 
@@ -324,6 +334,18 @@ export function createPlugin(deps: PluginDeps) {
         if (clean === "") throw new Refusal({ code: "invalid", message: "Pick a name." });
         await settings.experimental_set({ displayName: clean });
         return { name: clean };
+      },
+      setAvatar(input) {
+        const update = avatarWrite.then(async () => {
+          const next = input ? { ...avatar, style: input.style } : { ...avatar, seed: randomAvatarSeed() };
+          await kv.set(KV_AVATAR, next);
+          avatar = next;
+          pushStatus();
+          publish();
+          return avatar;
+        });
+        avatarWrite = update.then(() => {}, () => {});
+        return update;
       },
       poke: ({ to }) => send({ t: "poke", to }),
       react: ({ to, emoji }) => send({ t: "react", to, emoji }),
