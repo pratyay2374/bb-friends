@@ -2,6 +2,9 @@ node_modules/
 dist/
 .wrangler/
 .dev.vars
+.dev.vars.*
 .env
+.env.*
+/docs/flow/
 *.log
 .DS_Store

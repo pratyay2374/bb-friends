@@ -21,11 +21,11 @@ const text = (value: unknown, fallback: string): string =>
 export function Notifier() {
   useRealtime(CHANNEL_POKE, (payload) => {
     const { fromName } = (payload ?? {}) as Partial<PokePayload>;
-    toast(`👉 ${text(fromName, "A friend")} poked you`);
+    toast(`👉\u00a0${text(fromName, "A friend")} poked you`);
   });
   useRealtime(CHANNEL_REACT, (payload) => {
     const { fromName, emoji } = (payload ?? {}) as Partial<ReactPayload>;
-    toast(`${text(emoji, "👍")} ${text(fromName, "A friend")} sent you a reaction`);
+    toast(`${text(emoji, "👍")}\u00a0${text(fromName, "A friend")} sent you a reaction`);
   });
   useRealtime(CHANNEL_NOTICE, (payload) => {
     const { message } = (payload ?? {}) as Partial<NoticePayload>;
