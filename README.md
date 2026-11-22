@@ -156,3 +156,7 @@ plugin/
 - No accounts: anyone with the invite code can join. Treat the code like a password; leave and make a new room to rotate it.
 - Display names aren't unique, and a room's friends are only those currently connected (no persistent roster).
 - The plugin relies on a global `WebSocket` in bb's plugin runtime (Node 22+). It is covered by tests with a fake socket, but has not been run inside a live bb here.
+
+## License
+
+MIT, see LICENSE.
