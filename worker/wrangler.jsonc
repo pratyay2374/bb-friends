@@ -4,8 +4,14 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "durable_objects": {
-    "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
+    "bindings": [
+      { "name": "ROOMS", "class_name": "Room" },
+      { "name": "IP_LIMITER", "class_name": "IpLimiter" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Room"] },
+    { "tag": "v2", "new_sqlite_classes": ["IpLimiter"] }
+  ],
   "observability": { "enabled": true }
 }

@@ -15,8 +15,20 @@ export const status = (over: Partial<Status> = {}): Status => ({
   ...over,
 });
 
+/** A random documentation-range IPv6 address, so tests don't share a creation limit. */
+export const randomIp = (): string =>
+  `2001:db8::${crypto.getRandomValues(new Uint16Array(1))[0]!.toString(16)}:${crypto
+    .getRandomValues(new Uint16Array(1))[0]!
+    .toString(16)}`;
+
+export const postRoom = (ip: string | null = randomIp()): Promise<Response> =>
+  SELF.fetch("http://edge/rooms", {
+    method: "POST",
+    headers: ip === null ? {} : { "cf-connecting-ip": ip },
+  });
+
 export async function createRoom(): Promise<string> {
-  const res = await SELF.fetch("http://edge/rooms", { method: "POST" });
+  const res = await postRoom();
   if (res.status !== 201) throw new Error(`create failed: ${res.status}`);
   return ((await res.json()) as { code: string }).code;
 }

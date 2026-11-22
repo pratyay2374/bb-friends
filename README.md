@@ -26,7 +26,8 @@ Never thread titles, prompts, file paths, ids or message content. This is enforc
 
 A plain Worker is stateless: it can't hold a WebSocket open across requests, and can't fan a message out to the other people in a room. KV is eventually consistent and slow for something like presence. A **Durable Object gives each room one single-threaded coordinator** with strongly consistent state and low-latency WebSocket fan-out.
 
-- **Worker** (`worker/src/index.ts`): stateless edge router. Validates the URL, mints invite codes, forwards `/rooms/:code/ws` to the room's DO. No state.
+- **Worker** (`worker/src/index.ts`): stateless edge router. Validates the URL, mints invite codes (after a per-IP check), forwards `/rooms/:code/ws` to the room's DO. No state.
+- **`IpLimiter` Durable Object** (`worker/src/ip-limiter.ts`): one per client IP, used only by `POST /rooms`. See *Room creation limit* below.
 - **`Room` Durable Object** (`worker/src/room.ts`): one per invite code.
   - **WebSocket Hibernation API** (`ctx.acceptWebSocket`, `serializeAttachment`): each member's state lives in their socket's attachment, so an idle room is evicted from memory and costs nothing; the next message wakes it. Keepalive `ping`/`pong` is answered by the runtime via `setWebSocketAutoResponse` without waking the object.
   - **Deltas, not snapshots**: a full `welcome` on join, then single `member` / `left` / `feed` frames. An unchanged status sends nothing.
@@ -36,6 +37,17 @@ A plain Worker is stateless: it can't hold a WebSocket open across requests, and
   - **Invite codes** are minted by the Worker, 10 chars from a 32-symbol alphabet using `crypto.getRandomValues` (50 bits). Clients can't pick codes, and the DO refuses sockets to rooms that were never created.
   - **Identity**: the server assigns each member's public id; the client's stable install id (`cid`) is never broadcast, so nobody can impersonate a friend. Reconnecting with the same `cid` takes over the old connection quietly.
   - **Cleanup**: an empty room is wiped 7 days after its last member leaves (DO alarm). Sockets that never say hello are closed after 15 s. Max 20 members per room.
+
+### Room creation limit
+
+`POST /rooms` allows **10 rooms per client IP per rolling hour**. Past that it returns `429` with a `Retry-After` header (seconds until the oldest creation in the window ages out) and mints nothing.
+
+- The IP is `CF-Connecting-IP`, which Cloudflare sets on every request. Requests without it (only possible outside Cloudflare's edge) share one `unknown` bucket, so the check fails closed.
+- Each IP gets its own small SQLite-backed Durable Object (`idFromName(ip)`) running the same sliding-window limiter as the room's per-sender limits (`worker/src/limiter.ts`). That gives one exact count worldwide, works the same under `wrangler dev` and in tests, and needs no extra dependency or paid feature. It stores only timestamps and deletes them (via an alarm) an hour after the IP's last creation.
+- Why not Cloudflare's [Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/): its `period` can only be 10 or 60 seconds (too short for "N rooms an hour"), its counts are approximate and kept separately in each Cloudflare location, and its docs say to use a Durable Object when you need a strict limit.
+- To change the numbers, edit `ROOM_CREATE_LIMIT` in `worker/src/ip-limiter.ts`.
+- Locally every request comes from one address, so the limit applies to all your local clients together. `npm run e2e` uses fresh local state each run so it never hits the limit. For a long `wrangler dev` session, restart with fresh state (delete `worker/.wrangler/`) if you hit it.
+- Many people behind one NAT (office, campus, carrier-grade NAT) share the 10/hour limit. Joining rooms is not limited per IP, only creating them.
 
 Protocol and limits live in one dependency-free file, `worker/src/protocol.ts`, copied verbatim to `plugin/lib/protocol.ts` (`npm run sync:protocol`; a test fails if they drift).
 
@@ -95,21 +107,23 @@ npx wrangler login
 npx wrangler deploy          # prints https://bb-friends.<your-subdomain>.workers.dev
 ```
 
-The first deploy applies the `v1` migration that creates the SQLite-backed `Room` class. Then point the plugin at it:
+The first deploy applies the `v1` and `v2` migrations, which create the SQLite-backed `Room` and `IpLimiter` classes. Then point the plugin at it:
 
 ```sh
 bb plugin config friends set serverUrl https://bb-friends.<your-subdomain>.workers.dev
 ```
 
-Durable Objects with SQLite storage are available on the Workers Free plan (check Cloudflare's current limits and pricing for your account). Before sharing the URL widely, consider a Cloudflare rate-limiting rule on `POST /rooms` (room creation is not limited per IP in the Worker).
+Durable Objects with SQLite storage are available on the Workers Free plan (check Cloudflare's current limits and pricing for your account). Room creation is limited per IP inside the Worker (10/hour, see *Room creation limit*); every `POST /rooms` costs one extra Durable Object request for that check. A Cloudflare WAF rate-limiting rule is optional extra protection at the edge, not required.
 
 ## Layout
 
 ```
 worker/
-  wrangler.jsonc          DO binding, SQLite migration, compat date
+  wrangler.jsonc          DO bindings, SQLite migrations, compat date
   src/index.ts            router: POST /rooms, GET /rooms/:code, GET /rooms/:code/ws
   src/room.ts             the Room Durable Object
+  src/ip-limiter.ts       per-IP room-creation limit (IpLimiter Durable Object)
+  src/limiter.ts          shared SQLite sliding-window limiter
   src/protocol.ts         wire protocol, limits, validation, room codes
   test/                   vitest + @cloudflare/vitest-plugin (runs in workerd)
 plugin/

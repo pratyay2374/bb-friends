@@ -4,10 +4,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 PORT="${PORT:-8787}"
 LOG="${TMPDIR:-/tmp}/bb-friends-wrangler.log"
+# Fresh local state per run, so repeated runs never trip the per-IP
+# room-creation limit (all local requests come from one address).
+STATE="$(mktemp -d "${TMPDIR:-/tmp}/bb-friends-e2e.XXXXXX")"
 
-(cd worker && npx wrangler dev --port "$PORT" --local >"$LOG" 2>&1) &
+(cd worker && npx wrangler dev --port "$PORT" --local --persist-to "$STATE" >"$LOG" 2>&1) &
 WRANGLER_PID=$!
-trap 'kill $WRANGLER_PID 2>/dev/null || true; pkill -P $WRANGLER_PID 2>/dev/null || true' EXIT
+trap 'kill $WRANGLER_PID 2>/dev/null || true; pkill -P $WRANGLER_PID 2>/dev/null || true; rm -rf "$STATE"' EXIT
 
 for _ in $(seq 1 60); do
   if curl -fs "http://localhost:$PORT/health" >/dev/null 2>&1; then break; fi

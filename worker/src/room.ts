@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
+import { RATE_SCHEMA, takeToken } from "./limiter";
+
 import {
   CLOSE,
   DEFAULT_STATUS,
@@ -95,9 +97,8 @@ export class Room extends DurableObject<Env> {
         target TEXT,
         emoji TEXT
       );
-      CREATE TABLE IF NOT EXISTS rate (key TEXT NOT NULL, at INTEGER NOT NULL);
-      CREATE INDEX IF NOT EXISTS rate_key ON rate (key, at);
     `);
+    this.ctx.storage.sql.exec(RATE_SCHEMA);
   }
 
   // ── RPC from the Worker ──────────────────────────────────────────────────
@@ -421,16 +422,7 @@ export class Room extends DurableObject<Env> {
    */
   private allow(cid: string, kind: RateKind): boolean {
     const { max, windowMs } = RATE_LIMITS[kind];
-    const key = `${kind}:${cid}`;
-    const now = Date.now();
-    const sql = this.ctx.storage.sql;
-    sql.exec("DELETE FROM rate WHERE key = ? AND at <= ?", key, now - windowMs);
-    const used = sql
-      .exec<{ n: number }>("SELECT COUNT(*) AS n FROM rate WHERE key = ?", key)
-      .one().n;
-    if (used >= max) return false;
-    sql.exec("INSERT INTO rate (key, at) VALUES (?, ?)", key, now);
-    return true;
+    return takeToken(this.ctx.storage.sql, `${kind}:${cid}`, max, windowMs).ok;
   }
 }
 
